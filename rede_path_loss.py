@@ -248,3 +248,211 @@ plt.show()
 
 
 
+###################################################################
+#avaliando a rede
+#a funcao gerara path loss pela GAN
+def gerar_pathloss_pytorch(ue_x, ue_y):
+    """
+    Função para gerar um valor de path_loss com o modelo PyTorch treinado.
+    """
+    # Coloca o gerador em modo de avaliação
+    generator.eval()
+    
+    # Desativa o cálculo de gradientes para inferência
+    with torch.no_grad():
+        # 1. Preparar os dados de entrada (condição)
+        coords = np.array([[ue_x, ue_y]])
+        
+        # 2. Escalar os dados
+        scaled_coords = condition_scaler.transform(coords)
+        
+        # 3. Converter para tensor e mover para o dispositivo
+        coords_tensor = torch.FloatTensor(scaled_coords).to(device)
+        
+        # 4. Preparar o ruído
+        noise = torch.randn(1, latent_dim, device=device)
+        
+        # 5. Gerar o path_loss escalado
+        scaled_generated_pl = generator(noise, coords_tensor)
+        
+        # 6. Mover resultado de volta para a CPU e converter para numpy
+        generated_pl_numpy = scaled_generated_pl.cpu().numpy()
+        
+        # 7. Reverter a escala
+        original_pl = data_scaler.inverse_transform(generated_pl_numpy)
+        
+        return original_pl[0][0]
+
+# --- Exemplo de Uso ---
+exemplo_x, exemplo_y = 500, 500
+path_loss_gerado = gerar_pathloss_pytorch(exemplo_x, exemplo_y)
+print(f"\nPara as coordenadas (x={exemplo_x}, y={exemplo_y}), o path_loss gerado foi: {path_loss_gerado:.2f} dB")
+
+# --- Verificação Visual (igual ao código anterior) ---
+generator.eval()
+with torch.no_grad():
+    noise = torch.randn(1000, latent_dim, device=device)
+    # Pega 1000 condições aleatórias dos dados de treino
+    random_indices = np.random.randint(0, len(conditions_tensor), 1000)
+    sample_conditions = conditions_tensor[random_indices]
+    
+    generated_samples_scaled = generator(noise, sample_conditions)
+    generated_samples = data_scaler.inverse_transform(generated_samples_scaled.cpu().numpy())
+
+# Comparar a distribuição dos dados reais e gerados
+plt.figure(figsize=(12, 6))
+sns.kdeplot(df_amostra_proporcional['path_loss'], label='Path Loss Real (da Amostra)', color='blue', fill=True)
+sns.kdeplot(generated_samples.flatten(), label='Path Loss Gerado (pela cGAN)', color='red', fill=True)
+plt.title('Comparação da Distribuição de Path Loss Real vs. Gerado (PyTorch)')
+plt.xlabel('Path Loss (dB)')
+plt.ylabel('Densidade')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+
+
+
+#testando a Gan com os dados que foram treinados
+
+# --- Passo 1: Gerar uma Amostra Grande de Dados ---
+
+# Define o número de amostras a serem geradas. Um bom número é o tamanho da base de treino.
+num_generated_samples = len(df_amostra_proporcional)
+print(f"Gerando {num_generated_samples} amostras de path_loss com a cGAN...")
+
+# Coloca o gerador em modo de avaliação
+generator.eval()
+
+# Desativa o cálculo de gradientes para acelerar a inferência
+with torch.no_grad():
+    # Pega condições aleatórias dos dados de treinamento para gerar path_loss correspondente
+    random_indices = np.random.randint(0, len(conditions_tensor), num_generated_samples)
+    sample_conditions = conditions_tensor[random_indices]
+    
+    # Gera ruído aleatório
+    noise = torch.randn(num_generated_samples, latent_dim, device=device)
+    
+    # Gera os dados escalados
+    generated_samples_scaled = generator(noise, sample_conditions)
+    
+    # Move os dados para a CPU (se estiver na GPU) e converte para numpy
+    generated_samples_numpy = generated_samples_scaled.cpu().numpy()
+    
+    # Inverte a escala para obter os valores originais de path_loss
+    path_loss_gerado = data_scaler.inverse_transform(generated_samples_numpy).flatten()
+
+print("Amostras geradas com sucesso!")
+
+
+# --- Passo 2: Preparar os Dados para Plotagem ---
+
+# Dados reais da sua amostra original
+path_loss_real = df_amostra_proporcional['path_loss'].values
+
+
+# --- Passo 3: Plotar as CDFs para Comparação ---
+
+plt.style.use('seaborn-v0_8-whitegrid') # Define um estilo bonito para o gráfico
+plt.figure(figsize=(12, 7))
+
+# Plotar a CDF dos dados reais
+sns.ecdfplot(x=path_loss_real, linewidth=2.5, 
+             label='CDF dos Dados Reais')
+
+# Plotar a CDF dos dados gerados pela GAN
+sns.ecdfplot(x=path_loss_gerado, linewidth=2.5, linestyle='--',
+             label='CDF dos Dados Gerados pela cGAN')
+
+plt.title('Comparação de CDFs: Dados Reais vs. Dados Gerados', fontsize=16)
+plt.xlabel('Path Loss (dB)', fontsize=12)
+plt.ylabel('Probabilidade Cumulativa (P[Path Loss ≤ x])', fontsize=12)
+plt.legend(fontsize=11)
+plt.show()
+
+
+
+
+
+
+
+
+
+#funcao para gerar path loss em lotes para nao estourar a memoria ram
+
+
+def gerar_em_batches(df, batch_size=512):
+    """
+    Gera path loss com a cGAN treinada, processando em batches para evitar estouro de memória.
+    """
+    df_resultado = df.copy()
+    coords = df[['ue_x', 'ue_y']].values
+    total = len(coords)
+    path_loss_gerado_list = []
+
+    generator.eval()
+    with torch.no_grad():
+        for i in tqdm(range(0, total, batch_size)):
+            # Seleciona o batch
+            batch_coords = coords[i:i+batch_size]
+
+            # Escala
+            scaled_coords = condition_scaler.transform(batch_coords)
+            coords_tensor = torch.FloatTensor(scaled_coords).to(device)
+
+            # Ruído
+            noise = torch.randn(len(batch_coords), latent_dim, device=device)
+
+            # Geração
+            scaled_generated = generator(noise, coords_tensor)
+
+            # Volta para CPU e desscale
+            pl_numpy = scaled_generated.cpu().numpy()
+            pl_original = data_scaler.inverse_transform(pl_numpy)
+
+            # Armazena
+            path_loss_gerado_list.extend(pl_original.flatten())
+
+    df_resultado['path_loss_gerado'] = path_loss_gerado_list
+    return df_resultado
+
+
+##############
+df_com_gerados = gerar_em_batches(df, batch_size=100000)
+
+
+
+# === Métricas ===
+y_true = df_com_gerados['path_loss'].values
+y_pred = df_com_gerados['path_loss_gerado'].values
+
+mae = mean_absolute_error(y_true, y_pred)
+mse = mean_squared_error(y_true, y_pred)
+rmse = np.sqrt(mse)
+
+
+print(f"   MAE  = {mae:.4f} dB")
+print(f"   MSE  = {mse:.4f} dB²")
+print(f"   RMSE = {rmse:.4f} dB")
+
+
+# Ordenar valores
+y_true_sorted = np.sort(y_true)
+y_pred_sorted = np.sort(y_pred)
+
+# Construir a CDF manualmente
+cdf_true = np.arange(1, len(y_true_sorted)+1) / len(y_true_sorted)
+cdf_pred = np.arange(1, len(y_pred_sorted)+1) / len(y_pred_sorted)
+
+plt.figure(figsize=(10, 6))
+plt.plot(y_true_sorted, cdf_true, label='Path Loss Real', color='blue', linewidth=2)
+plt.plot(y_pred_sorted, cdf_pred, label='Path Loss Gerado (cGAN)', color='red', linewidth=2)
+
+plt.title('Função de Distribuição Acumulada (CDF)\nPath Loss Real vs. Gerado')
+plt.xlabel('Path Loss (dB)')
+plt.ylabel('Probabilidade Acumulada')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
